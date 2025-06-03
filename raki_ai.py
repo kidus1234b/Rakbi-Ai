@@ -1,12 +1,3 @@
-import os
-import platform
-import subprocess
-import speech_recognition as sr
-import pyttsx3
-import datetime
-import psutil
-import smtplib
-import json
 import time
 import webbrowser
 import shutil
@@ -89,7 +80,7 @@ class HumanizedTTS:
             self.current_voice_profile = profile_type
             profile = self.speech_patterns[profile_type]
             current_rate = self.engine.getProperty('rate')
-            self.engine.setProperty('rate', max(120, min(300, current_rate + profile['rate']))
+            self.engine.setProperty('rate', max(120), min(300), current_rate + profile['rate'])
             self.engine.setProperty('pitch', profile['pitch'])
     
     def add_vocal_variation(self, text):
@@ -172,9 +163,76 @@ class RakiAI:
         threading.Thread(target=self.check_reminders, daemon=True).start()
         threading.Thread(target=self.monitor_system, daemon=True).start()
         threading.Thread(target=self.deep_background_scan, daemon=True).start()
+        threading.Thread(target=self.continuous_learning, daemon=True).start()
 
-    # Existing methods (load_config, save_config, init_encryption, etc.) remain here
-    # ... [Previous implementation of load_config, save_config, etc.] ...
+    def load_config(self):
+        """Load or create configuration"""
+        default_config = {
+            'default_language': 'en',
+            'email': '',
+            'email_password': '',
+            'offline_mode': False,
+            'allowed_commands': ['apt', 'systemctl', 'ls', 'df', 'du', 'cat'],
+            'voice_activation': True,
+            'temperature_unit': 'celsius',
+            'google_api_key': '',
+            'google_cse_id': ''
+        }
+        
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    return {**default_config, **json.load(f)}
+            except:
+                pass
+        return default_config
+
+    def save_config(self):
+        """Save configuration to file"""
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(self.config, f, indent=2)
+
+    def init_encryption(self):
+        """Initialize encryption system"""
+        if not os.path.exists(KEY_FILE):
+            key = Fernet.generate_key()
+            with open(KEY_FILE, 'wb') as f:
+                f.write(key)
+        
+        with open(KEY_FILE, 'rb') as f:
+            key = f.read()
+        
+        return Fernet(key)
+
+    def encrypt_data(self, data):
+        """Encrypt sensitive data"""
+        return self.cipher.encrypt(data.encode()).decode()
+
+    def decrypt_data(self, data):
+        """Decrypt sensitive data"""
+        return self.cipher.decrypt(data.encode()).decode()
+
+    def load_reminders(self):
+        """Load encrypted reminders"""
+        if not os.path.exists(REMINDERS_FILE):
+            return []
+        
+        try:
+            with open(REMINDERS_FILE, 'r') as f:
+                encrypted = f.read()
+                decrypted = self.decrypt_data(encrypted)
+                return json.loads(decrypted)
+        except:
+            return []
+
+    def save_reminders(self):
+        """Save encrypted reminders"""
+        if self.incognito_mode:
+            return
+            
+        encrypted = self.encrypt_data(json.dumps(self.reminders))
+        with open(REMINDERS_FILE, 'w') as f:
+            f.write(encrypted)
 
     def load_conversation_history(self):
         """Load encrypted conversation history"""
@@ -184,7 +242,7 @@ class RakiAI:
         try:
             with open(HISTORY_FILE, 'r') as f:
                 encrypted = f.read()
-                decrypted = self.cipher.decrypt(encrypted.encode()).decode()
+                decrypted = self.decrypt_data(encrypted)
                 return json.loads(decrypted)
         except:
             return []
@@ -194,7 +252,7 @@ class RakiAI:
         if self.incognito_mode:
             return
             
-        encrypted = self.cipher.encrypt(json.dumps(self.conversation_history).encode()).decode()
+        encrypted = self.encrypt_data(json.dumps(self.conversation_history))
         with open(HISTORY_FILE, 'w') as f:
             f.write(encrypted)
 
@@ -296,6 +354,40 @@ class RakiAI:
             except:
                 time.sleep(300)
 
+    def continuous_learning(self):
+        """Background thread for continuous learning"""
+        while not self.shutdown_flag:
+            # Analyze conversation patterns
+            self.analyze_conversation_patterns()
+            
+            # Update language models
+            self.update_language_models()
+            
+            # Sleep for 1 hour between learning sessions
+            time.sleep(3600)
+
+    def analyze_conversation_patterns(self):
+        """Analyze conversation history to improve responses"""
+        if not self.conversation_history:
+            return
+            
+        # Simple analysis - count most used words
+        word_freq = {}
+        for entry in self.conversation_history:
+            for word in entry['user'].split() + entry['ai'].split():
+                if len(word) > 4:  # Only consider meaningful words
+                    word_freq[word] = word_freq.get(word, 0) + 1
+        
+        # Save top 20 words to config
+        top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
+        self.config['common_words'] = [word for word, freq in top_words]
+        self.save_config()
+
+    def update_language_models(self):
+        """Improve language understanding based on interactions"""
+        # This would integrate with actual ML models in a real implementation
+        print("Updating language models based on recent interactions")
+
     def speak_amharic(self, text):
         """Specialized Amharic speech with cultural context"""
         # Add Ethiopian flavor to responses
@@ -389,7 +481,267 @@ class RakiAI:
         
         return {}
 
-    # ... [Previous methods: listen, run_terminal_command, system_diagnostics, etc.] ...
+    def listen(self):
+        """Capture voice input with language support"""
+        with sr.Microphone() as source:
+            print("Listening...")
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = self.recognizer.listen(source, timeout=5)
+            
+            try:
+                if self.config['offline_mode']:
+                    # Offline recognition would go here (using Vosk or similar)
+                    command = "Offline mode not fully implemented"
+                else:
+                    # Use Google's speech recognition with dynamic language
+                    command = self.recognizer.recognize_google(
+                        audio, 
+                        language=self.get_google_lang_code()
+                    )
+                
+                print(f"You said: {command}")
+                return command.lower()
+            except sr.UnknownValueError:
+                self.speak("Sorry, I didn't quite catch that.")
+            except sr.RequestError:
+                self.speak("Network error. Switching to offline mode.")
+                self.config['offline_mode'] = True
+            except Exception as e:
+                print(f"Recognition error: {str(e)}")
+                
+        return ""
+
+    def get_google_lang_code(self):
+        """Map our language codes to Google's format"""
+        lang_map = {
+            'en': 'en-US',
+            'am': 'am-ET',
+            'om': 'om-ET',
+            'ti': 'ti-ET',
+            'fr': 'fr-FR',
+            'zh': 'zh-CN'
+        }
+        return lang_map.get(self.current_language, 'en-US')
+
+    def run_terminal_command(self, command):
+        """Execute terminal commands with safety checks"""
+        # Command whitelisting
+        allowed = any(cmd in command for cmd in self.config['allowed_commands'])
+        
+        if not allowed:
+            self.speak("For security reasons, I can't execute that command.")
+            return ""
+            
+        try:
+            result = subprocess.check_output(
+                command, 
+                shell=True, 
+                text=True,
+                stderr=subprocess.STDOUT
+            )
+            return result
+        except subprocess.CalledProcessError as e:
+            return f"Error: {e.output[:100]}"
+        except Exception as e:
+            return f"Unexpected error: {str(e)}"
+
+    def system_diagnostics(self):
+        """Comprehensive system health check"""
+        issues = []
+        
+        # CPU and Memory
+        cpu_usage = psutil.cpu_percent()
+        if cpu_usage > 85:
+            issues.append(f"High CPU usage: {cpu_usage}%")
+        
+        mem_usage = psutil.virtual_memory().percent
+        if mem_usage > 85:
+            issues.append(f"High RAM usage: {mem_usage}%")
+        
+        # Disk space
+        disk = shutil.disk_usage('/')
+        disk_percent = disk.percent
+        if disk_percent > 90:
+            issues.append(f"Low disk space: {disk_percent}% used")
+        
+        # Temperature (Linux-specific)
+        try:
+            temp = psutil.sensors_temperatures()
+            if 'coretemp' in temp:
+                for entry in temp['coretemp']:
+                    if entry.current > 85:
+                        issues.append(f"High temperature: {entry.current}°C")
+        except:
+            pass
+        
+        # Battery (if available)
+        try:
+            battery = psutil.sensors_battery()
+            if battery:
+                if battery.percent < 15 and not battery.power_plugged:
+                    issues.append(f"Low battery: {battery.percent}% remaining")
+        except:
+            pass
+        
+        # Network connectivity
+        try:
+            socket.create_connection(("8.8.8.8", 53), timeout=3)
+        except OSError:
+            issues.append("Network connection unavailable")
+        
+        return issues
+
+    def set_reminder(self, text, time_str=None):
+        """Set reminder with optional time"""
+        if not time_str:
+            # Default to 1 hour from now
+            remind_time = datetime.datetime.now() + datetime.timedelta(hours=1)
+        else:
+            # Parse natural language time
+            if 'in' in time_str:
+                parts = time_str.split('in')[-1].strip().split()
+                num = int(parts[0]) if parts[0].isdigit() else 1
+                unit = parts[1] if len(parts) > 1 else 'hour'
+                delta = {
+                    'minute': datetime.timedelta(minutes=num),
+                    'min': datetime.timedelta(minutes=num),
+                    'hour': datetime.timedelta(hours=num),
+                    'hr': datetime.timedelta(hours=num),
+                    'day': datetime.timedelta(days=num)
+                }.get(unit, datetime.timedelta(hours=1))
+                remind_time = datetime.datetime.now() + delta
+            else:
+                # Try to parse absolute time
+                try:
+                    remind_time = datetime.datetime.strptime(time_str, "%H:%M")
+                    now = datetime.datetime.now()
+                    remind_time = remind_time.replace(
+                        year=now.year, 
+                        month=now.month, 
+                        day=now.day
+                    )
+                    if remind_time < now:
+                        remind_time += datetime.timedelta(days=1)
+                except:
+                    remind_time = datetime.datetime.now() + datetime.timedelta(hours=1)
+        
+        self.reminders.append({
+            'text': text,
+            'time': remind_time.timestamp(),
+            'created': datetime.datetime.now().timestamp()
+        })
+        self.save_reminders()
+        return f"{remind_time.strftime('%H:%M')}"
+
+    def check_reminders(self):
+        """Background thread to check for due reminders"""
+        while not self.shutdown_flag:
+            now = datetime.datetime.now().timestamp()
+            to_remove = []
+            
+            for i, reminder in enumerate(self.reminders):
+                if now >= reminder['time']:
+                    self.speak(f"Reminder: {reminder['text']}")
+                    to_remove.append(i)
+            
+            # Remove triggered reminders
+            for i in sorted(to_remove, reverse=True):
+                self.reminders.pop(i)
+            if to_remove:
+                self.save_reminders()
+            
+            time.sleep(60)  # Check every minute
+
+    def monitor_system(self):
+        """Background thread to monitor system health"""
+        while not self.shutdown_flag:
+            time.sleep(300)  # Check every 5 minutes
+            issues = self.system_diagnostics()
+            if issues:
+                self.speak("I've detected some system issues: " + ", ".join(issues[:3]) + 
+                          ". Would you like me to attempt repairs?")
+
+    def send_email(self, to_email, subject=None, body=None):
+        """Send email with voice interaction"""
+        try:
+            if not subject:
+                self.speak("What should the subject be?")
+                subject = self.listen() or "No subject"
+            
+            if not body:
+                self.speak("What should the message say?")
+                body = self.listen() or "No content"
+            
+            msg = EmailMessage()
+            msg['Subject'] = subject
+            msg['From'] = self.config['email']
+            msg['To'] = to_email
+            msg.set_content(body)
+            
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+                smtp.login(
+                    self.config['email'], 
+                    self.config['email_password']
+                )
+                smtp.send_message(msg)
+            
+            return True
+        except Exception as e:
+            print(f"Email error: {str(e)}")
+            return False
+
+    def system_info(self):
+        """Provide detailed system information"""
+        info = [
+            f"OS: {platform.system()} {platform.release()}",
+            f"CPU: {psutil.cpu_percent()}% usage",
+            f"Memory: {psutil.virtual_memory().percent}% used",
+            f"Disk: {shutil.disk_usage('/').percent}% full"
+        ]
+        
+        # Add temperature if available
+        try:
+            temp = psutil.sensors_temperatures()
+            if 'coretemp' in temp:
+                core_temp = temp['coretemp'][0].current
+                info.append(f"Temperature: {core_temp}°C")
+        except:
+            pass
+        
+        return ", ".join(info)
+
+    def open_website(self, url):
+        """Open website in default browser"""
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        
+        try:
+            webbrowser.open(url)
+            return True
+        except:
+            return False
+
+    def change_language(self, lang):
+        """Change assistant language"""
+        supported = ['en', 'am', 'om', 'ti', 'fr', 'zh', 'auto']
+        if lang in supported:
+            self.current_language = lang
+            return True
+        return False
+
+    def wipe_history(self):
+        """Delete all stored data"""
+        try:
+            for f in [REMINDERS_FILE, CONFIG_FILE, HISTORY_FILE]:
+                if os.path.exists(f):
+                    os.remove(f)
+            return True
+        except:
+            return False
+
+    def set_incognito(self, enable=True):
+        """Toggle incognito mode"""
+        self.incognito_mode = enable
 
     def process_command(self, command):
         """Process voice commands with enhanced capabilities"""
@@ -418,6 +770,8 @@ class RakiAI:
             elif "ቀልድ" in command:
                 joke = self.tell_joke('am')
                 response = joke
+            elif "ታሪክ" in command or "ፕሮግራም" in command:
+                response = "ራኪ ኤአይ በራኪቦይ ኦኤስ ላይ የሚሰራ የኢትዮጵያ ሰው ሰራሽ አስማት ነው። በፓይዘን ተገንብቶ በኢትዮጵያ ባህል እና ቋንቋ የተለየ ነው!"
             else:
                 response = self.deep_conversation(command)
         
@@ -429,11 +783,19 @@ class RakiAI:
                 if pkg:
                     pkg_name = pkg.group(1).strip()
                     result = self.run_terminal_command(f"sudo apt install {pkg_name} -y")
-                    response = f"Successfully installed {pkg_name}." if "Error" not in result else f"Installation failed: {result}"
+                    if "Error" not in result:
+                        response = f"Successfully installed {pkg_name}."
+                    else:
+                        response = f"Had some trouble installing {pkg_name}. {result}"
+                else:
+                    response = "Please specify which package you'd like me to install."
             
             elif 'update' in command or 'upgrade' in command:
                 result = self.run_terminal_command("sudo apt update && sudo apt upgrade -y")
-                response = "System updated successfully." if "Error" not in result else f"Update failed: {result}"
+                if "Error" not in result:
+                    response = "System updated successfully."
+                else:
+                    response = "Ran into some issues during the update. " + result
             
             elif 'diagnos' in command:
                 issues = self.system_diagnostics()
@@ -556,7 +918,7 @@ class RakiAI:
             if command:
                 if 'help' in command or 'ርዱ' in command:
                     if self.current_language == 'am':
-                        help_msg = "የምሠራው ነገር፦ መተግበሪያ መጫን፣ ስርዓት ማደስ፣ ችግር መፈተስ፣ አስታውስት �ማስቀመጥ፣ ኢሜል ላክ፣ ድረገጽ ክፈት፣ ቋንቋ ቀይር፣ የምስል ፍለጋ፣ የድረገጽ ፍለጋ፣ ቀልድ ንገር። ምን ትፈልጋለህ?"
+                        help_msg = "የምሠራው ነገር፦ መተግበሪያ መጫን፣ ስርዓት ማደስ፣ ችግር መፈተስ፣ አስታውስት ማስቀመጥ፣ ኢሜል ላክ፣ ድረገጽ ክፈት፣ ቋንቋ ቀይር፣ የምስል ፍለጋ፣ የድረገጽ ፍለጋ፣ ቀልድ ንገር። ምን ትፈልጋለህ?"
                     else:
                         help_msg = "I can help with: Installing software, system updates, diagnostics, " \
                                   "setting reminders, sending emails, web research, image search, " \
