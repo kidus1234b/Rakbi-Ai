@@ -1,101 +1,85 @@
-Raki AI Assistant
+# Raki AI Assistant
 
-Raki AI is a voice-activated personal assistant built in Python to run cross-platform. It performs common tasks via natural language input, such as running terminal commands, checking system health, sending emails, and browsing the web.
+Raki AI is a cross-platform, voice-activated personal assistant built in Python. It performs common tasks via natural language input, such as running terminal commands, checking system health, sending emails, and browsing the web.
 
-🚀 Features
+## 🚀 Features
 
-🎤 1. Voice Recognition
+### 🎤 1. Voice Recognition
 
-Listens via the system microphone using the speech_recognition library.
+- Listens via the system microphone using the `speech_recognition` library.
+- Transcribes spoken commands into text using Google Speech Recognition.
+- Handles ambient noise and network errors gracefully.
 
-Transcribes spoken commands into text using Google Speech Recognition.
+### 🔊 2. Text-to-Speech (TTS)
 
-Handles ambient noise and network errors gracefully.
+- Speaks responses using `pyttsx3`, with customizable voice, rate, and volume.
+- Offline-capable text-to-speech engine.
 
-🔊 2. Text-to-Speech (TTS)
+### 🧾 3. Terminal Command Execution
 
-Speaks responses using pyttsx3, with customizable voice, rate, and volume.
+- Executes system commands like install and update via the shell.
+- Reports success or failure and displays command output.
 
-Offline-capable text-to-speech engine.
+### ⚙️ 4. System Diagnostics
 
-🧾 3. Terminal Command Execution
+- Monitors CPU, RAM, and Disk usage with `psutil`.
+- Alerts the user if:
+  - CPU or RAM > 85%
+  - Disk usage > 90%
 
-Executes system commands like install and update via the shell.
+### 📅 5. Reminders
 
-Reports success or failure and displays command output.
+- Allows the user to set simple text-based reminders.
+- Appends reminders to a local `reminders.txt` file.
 
-⚙️ 4. System Diagnostics
+### 📧 6. Email Sending
 
-Monitors CPU, RAM, and Disk usage with psutil.
+- Sends emails via Gmail SMTP.
+- Prompts for subject, body, and recipient address.
+- Uses the `smtplib` and `email.message` libraries.
 
-Alerts the user if:
+### 💻 7. System Info
 
-CPU or RAM > 85%
+- Provides OS and version details using the `platform` module.
 
-Disk usage > 90%
+### 🌐 8. Website Opening
 
-📅 5. Reminders
+- Opens websites in the default browser using `webbrowser`.
+- Automatically constructs full URLs from site names.
 
-Allows the user to set a simple text-based reminder.
+### ❌ 9. Voice-Controlled Exit
 
-Appends reminders to a local reminders.txt file.
+- Recognizes commands like "exit" or "stop" to quit the assistant.
 
-📧 6. Email Sending
+## ✅ Example Commands
 
-Sends emails via Gmail SMTP.
+- "Install VLC"
+- "Update system"
+- "Diagnose"
+- "Set reminder take medicine"
+- "Send email"
+- "Open YouTube"
+- "System info"
+- "Exit"
 
-Prompts for subject, body, and recipient address.
+## 📌 Notes
 
-Uses the smtplib and email.message libraries.
+- Gmail credentials are hardcoded in the script. **Use environment variables or a secure method in production.**
+- Some features may require Linux-like environments (e.g., `sudo apt install`).
+- This assistant runs in an infinite loop and is terminated only by a user command.
 
-💻 7. System Info
+## 🔧 Requirements
 
-Provides OS and version details using the platform module.
-
-🌐 8. Website Opening
-
-Opens websites in the default browser using webbrowser.
-
-Automatically constructs full URLs from site names.
-
-❌ 9. Voice-Controlled Exit
-
-Recognizes commands like "exit" or "stop" to quit the assistant.
-
-✅ Example Commands
-
-"Install VLC"
-
-"Update system"
-
-"Diagnose"
-
-"Set reminder take medicine"
-
-"Send email"
-
-"Open YouTube"
-
-"System info"
-
-"Exit"
-
-📌 Notes
-
-Gmail credentials are hardcoded in the script. Use environment variables or a secure method in production.
-
-Some features may require Linux-like environments (e.g., sudo apt install).
-
-This assistant runs in an infinite loop and is terminated only by the user command.
-
-🔧 Requirements
-
+```bash
 pip install pyttsx3 speechrecognition pyaudio psutil
+```
 
-👨‍💻 Author
+## 👨‍💻 Author
 
-Kidus Bizuneh Desta Grade 12 Student, Negele Arsi  Kuyera Adventist Secondary School
+Kidus Bizuneh Desta  
+Grade 12 Student, Negele Arsi Kuyera Adventist Secondary School
 
-📄 License
+## 📄 License
 
 This project is open-source and free to use under the MIT License.
+```
