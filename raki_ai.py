@@ -1,3 +1,12 @@
+import os
+import platform
+import subprocess
+import speech_recognition as sr
+import pyttsx3
+import datetime
+import psutil
+import smtplib
+import json
 import time
 import webbrowser
 import shutil
@@ -21,11 +30,13 @@ CONFIG_FILE = "raki_config.json"
 REMINDERS_FILE = "encrypted_reminders.rak"
 KEY_FILE = "secret.key"
 HISTORY_FILE = "conversation_history.json"
+VOSK_MODEL_DIR = "vosk_models"
 
-class HumanizedTTS:
-    def __init__(self):
-        self.engine = pyttsx3.init()
-        self.configure_voice()
+class VoiceEngine:
+    def __init__(self, config):
+        self.config = config
+        self.tts_engine = self.init_tts()
+        self.stt_engine = self.init_stt()
         self.speech_patterns = {
             'question': {'rate': -20, 'pitch': 1.2},
             'statement': {'rate': 0, 'pitch': 1.0},
@@ -36,109 +47,234 @@ class HumanizedTTS:
         }
         self.current_voice_profile = 'statement'
         
+    def init_tts(self):
+        """Initialize text-to-speech engine based on config"""
+        if self.config['tts_provider'] == 'google':
+            return GoogleTTS()
+        elif self.config['tts_provider'] == 'festival':
+            return FestivalTTS()
+        else:  # Default to pyttsx3
+            return Pyttsx3TTS()
+    
+    def init_stt(self):
+        """Initialize speech-to-text engine based on config"""
+        if self.config['stt_provider'] == 'google':
+            return GoogleSTT()
+        elif self.config['stt_provider'] == 'vosk':
+            return VoskSTT(self.config['stt_model'])
+        else:  # Default to pyttsx3
+            return GoogleSTT()
+    
+    def speak(self, text, lang='en'):
+        """Convert text to speech using selected engine"""
+        return self.tts_engine.speak(text, lang)
+    
+    def listen(self):
+        """Capture voice input using selected engine"""
+        return self.stt_engine.listen()
+
+class Pyttsx3TTS:
+    def __init__(self):
+        self.engine = pyttsx3.init()
+        self.configure_voice()
+        
     def configure_voice(self):
-        """Find and configure the most human-like voice available"""
+        """Configure the most human-like voice available"""
         voices = self.engine.getProperty('voices')
         
-        # Prefer Ethiopian-accented voices if available
+        # Prefer Ethiopian-accented voices
         ethiopian_voices = [v for v in voices if 'ethiopia' in v.id.lower() or 'amharic' in v.id.lower()]
         if ethiopian_voices:
             self.engine.setProperty('voice', ethiopian_voices[0].id)
-            print(f"Using Ethiopian voice: {ethiopian_voices[0].name}")
             return
             
-        # Prefer MBROLA voices for natural sound
+        # Prefer MBROLA voices
         mbrola_voices = [v for v in voices if 'mbrola' in v.id.lower()]
         if mbrola_voices:
             self.engine.setProperty('voice', mbrola_voices[0].id)
-            print(f"Using MBROLA voice: {mbrola_voices[0].name}")
             return
             
-        # Fallback to high-quality natural voices
-        preferred_voices = [
-            'Microsoft Zira Desktop',  # Windows
-            'Microsoft David Desktop',
-            'Karen',                   # macOS
-            'Daniel',
-            'english_rp',              
-            'english-us'
-        ]
-        
+        # Fallback to high-quality voices
+        preferred_voices = ['Microsoft Zira', 'Microsoft David', 'Karen', 'Daniel']
         for pv in preferred_voices:
             for voice in voices:
                 if pv.lower() in voice.name.lower():
                     self.engine.setProperty('voice', voice.id)
-                    print(f"Using preferred voice: {voice.name}")
                     return
         
         # Final fallback
         print("Using default system voice")
     
-    def set_voice_profile(self, profile_type):
-        """Set vocal characteristics based on context"""
-        if profile_type in self.speech_patterns:
-            self.current_voice_profile = profile_type
-            profile = self.speech_patterns[profile_type]
-            current_rate = self.engine.getProperty('rate')
-            self.engine.setProperty('rate', max(120), min(300), current_rate + profile['rate'])
-            self.engine.setProperty('pitch', profile['pitch'])
-    
-    def add_vocal_variation(self, text):
-        """Add natural pauses and emphasis patterns"""
-        # Add commas for natural pauses
-        text = re.sub(r'\b(and|but|or|so)\b', r'\1,', text)
-        
-        # Add emphasis to important words
-        emphasis_words = ['important', 'critical', 'warning', 'alert', 'urgent']
-        for word in emphasis_words:
-            if word in text.lower():
-                text = text.replace(word, f"<emphasis>{word}</emphasis>")
-        
-        return text
-    
-    def humanized_speak(self, text, lang='en'):
-        """Convert text to speech with natural human characteristics"""
+    def speak(self, text, lang='en'):
+        """Convert text to speech"""
         if not text:
             return
             
-        # Auto-detect speech context
+        # Set language-specific properties
         if lang == 'am':
-            self.set_voice_profile('amharic')
-        elif text.endswith('?'):
-            self.set_voice_profile('question')
-        elif text.endswith('!') or any(w in text.lower() for w in ['alert', 'warning']):
-            self.set_voice_profile('exclamation')
-        elif text.startswith(('Please', 'Could you', 'Would you')):
-            self.set_voice_profile('command')
-        elif "joke" in text.lower() or "funny" in text.lower():
-            self.set_voice_profile('joke')
+            self.engine.setProperty('rate', 150)
+            self.engine.setProperty('pitch', 1.1)
         else:
-            self.set_voice_profile('statement')
+            self.engine.setProperty('rate', 160)
+            self.engine.setProperty('pitch', 1.0)
+            
+        print(f"Raki AI: {text}")
+        self.engine.say(text)
+        self.engine.runAndWait()
+
+class GoogleTTS:
+    def __init__(self):
+        try:
+            from gtts import gTTS
+            from playsound import playsound
+            self.gTTS = gTTS
+            self.playsound = playsound
+        except ImportError:
+            print("Google TTS requires gtts and playsound packages")
+            raise
         
-        # Add natural vocal variations
-        processed_text = self.add_vocal_variation(text)
+    def speak(self, text, lang='en'):
+        """Convert text to speech using Google's TTS"""
+        if not text:
+            return
+            
+        print(f"Raki AI: {text}")
+        lang_map = {'en': 'en', 'am': 'am', 'om': 'om', 'ti': 'ti', 'fr': 'fr', 'zh': 'zh-CN'}
+        tts = self.gTTS(text=text, lang=lang_map.get(lang, 'en'), slow=False)
+        tts.save("response.mp3")
+        self.playsound("response.mp3")
+        os.remove("response.mp3")
+
+class FestivalTTS:
+    def __init__(self):
+        # Verify Festival is installed
+        if not shutil.which('festival'):
+            raise EnvironmentError("Festival not installed. Please install with: sudo apt install festival")
         
+    def speak(self, text, lang='en'):
+        """Convert text to speech using Festival"""
+        if not text:
+            return
+            
         print(f"Raki AI: {text}")
         
-        # Speak with natural pauses between sentences
-        sentences = re.split(r'(?<=[.!?]) +', processed_text)
-        for i, sentence in enumerate(sentences):
-            self.engine.say(sentence)
-            self.engine.runAndWait()
-            
-            # Add natural pause between sentences
-            if i < len(sentences) - 1:
-                pause = 0.3 + random.uniform(0, 0.2)
-                time.sleep(pause)
+        # Map languages to Festival voices
+        voice_map = {
+            'en': 'voice_kal_diphone',
+            'am': 'voice_JuntaDeAndalucia_spanish_am_hts',  # Ethiopian Amharic approximation
+            'fr': 'voice_fr_paulelaine',
+            'zh': 'voice_cmu_us_slt_arctic_hts'
+        }
+        voice = voice_map.get(lang, 'voice_kal_diphone')
         
-        # Reset to default profile after speaking
-        self.set_voice_profile('statement')
+        # Use temporary file for better reliability
+        with open("tts.txt", "w") as f:
+            f.write(text)
+            
+        os.system(f'festival -b "(voice_{voice}) (tts \"tts.txt\" nil)"')
+        os.remove("tts.txt")
+
+class GoogleSTT:
+    def __init__(self):
+        self.recognizer = sr.Recognizer()
+        
+    def listen(self):
+        """Capture voice input using Google's speech recognition"""
+        with sr.Microphone() as source:
+            print("Listening...")
+            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            audio = self.recognizer.listen(source, timeout=5)
+            
+            try:
+                command = self.recognizer.recognize_google(audio)
+                print(f"You said: {command}")
+                return command.lower()
+            except sr.UnknownValueError:
+                return ""
+            except sr.RequestError:
+                print("Network error. Switching to offline mode.")
+                return ""
+
+class VoskSTT:
+    def __init__(self, model_name='en'):
+        try:
+            from vosk import Model, KaldiRecognizer
+            import pyaudio
+            self.Model = Model
+            self.KaldiRecognizer = KaldiRecognizer
+            self.pyaudio = pyaudio
+            
+            # Download model if needed
+            self.model_path = os.path.join(VOSK_MODEL_DIR, model_name)
+            if not os.path.exists(self.model_path):
+                self.download_model(model_name)
+                
+            self.model = Model(self.model_path)
+            self.audio = pyaudio.PyAudio()
+        except ImportError:
+            print("Vosk requires vosk and pyaudio packages")
+            raise
+        
+    def download_model(self, model_name):
+        """Download Vosk model if not available"""
+        model_urls = {
+            'en': 'https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip',
+            'am': 'https://alphacephei.com/vosk/models/vosk-model-small-am-0.4.zip',
+            'fr': 'https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip',
+            'zh': 'https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip'
+        }
+        
+        if model_name not in model_urls:
+            raise ValueError(f"Unsupported model: {model_name}")
+            
+        os.makedirs(VOSK_MODEL_DIR, exist_ok=True)
+        zip_path = os.path.join(VOSK_MODEL_DIR, f"{model_name}.zip")
+        
+        print(f"Downloading {model_name} model...")
+        with requests.get(model_urls[model_name], stream=True) as r:
+            r.raise_for_status()
+            with open(zip_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        
+        # Unzip model
+        import zipfile
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(VOSK_MODEL_DIR)
+        
+        # Rename directory to match model name
+        extracted = [d for d in os.listdir(VOSK_MODEL_DIR) if d.startswith("vosk-model")]
+        if extracted:
+            os.rename(os.path.join(VOSK_MODEL_DIR, extracted[0]), 
+                     os.path.join(VOSK_MODEL_DIR, model_name))
+        
+        os.remove(zip_path)
+        print(f"Model {model_name} downloaded and installed")
+        
+    def listen(self):
+        """Capture voice input using Vosk offline recognition"""
+        stream = self.audio.open(format=self.pyaudio.paInt16, channels=1,
+                                rate=16000, input=True, frames_per_buffer=8192)
+        stream.start_stream()
+        
+        recognizer = self.KaldiRecognizer(self.model, 16000)
+        print("Listening (offline)...")
+        
+        start_time = time.time()
+        while time.time() - start_time < 6:  # 6 second timeout
+            data = stream.read(4096, exception_on_overflow=False)
+            if recognizer.AcceptWaveform(data):
+                result = json.loads(recognizer.Result())
+                command = result.get('text', '').lower()
+                print(f"You said: {command}")
+                return command
+                
+        return ""
 
 class RakiAI:
     def __init__(self):
-        self.tts = HumanizedTTS()
-        self.recognizer = sr.Recognizer()
         self.config = self.load_config()
+        self.voice = VoiceEngine(self.config)
         self.cipher = self.init_encryption()
         self.reminders = self.load_reminders()
         self.conversation_history = self.load_conversation_history()
@@ -163,7 +299,6 @@ class RakiAI:
         threading.Thread(target=self.check_reminders, daemon=True).start()
         threading.Thread(target=self.monitor_system, daemon=True).start()
         threading.Thread(target=self.deep_background_scan, daemon=True).start()
-        threading.Thread(target=self.continuous_learning, daemon=True).start()
 
     def load_config(self):
         """Load or create configuration"""
@@ -176,7 +311,10 @@ class RakiAI:
             'voice_activation': True,
             'temperature_unit': 'celsius',
             'google_api_key': '',
-            'google_cse_id': ''
+            'google_cse_id': '',
+            'tts_provider': 'pyttsx3',  # Options: pyttsx3, google, festival
+            'stt_provider': 'google',    # Options: google, vosk
+            'stt_model': 'en'            # Model for Vosk
         }
         
         if os.path.exists(CONFIG_FILE):
@@ -272,7 +410,7 @@ class RakiAI:
     def speak(self, text, lang=None):
         """Speak text with human-like characteristics"""
         lang = lang or self.current_language
-        self.tts.humanized_speak(text, lang)
+        self.voice.speak(text, lang)
 
     def web_research(self, query, num_results=3):
         """Perform deep web research on a topic"""
@@ -353,40 +491,6 @@ class RakiAI:
                 time.sleep(1800)
             except:
                 time.sleep(300)
-
-    def continuous_learning(self):
-        """Background thread for continuous learning"""
-        while not self.shutdown_flag:
-            # Analyze conversation patterns
-            self.analyze_conversation_patterns()
-            
-            # Update language models
-            self.update_language_models()
-            
-            # Sleep for 1 hour between learning sessions
-            time.sleep(3600)
-
-    def analyze_conversation_patterns(self):
-        """Analyze conversation history to improve responses"""
-        if not self.conversation_history:
-            return
-            
-        # Simple analysis - count most used words
-        word_freq = {}
-        for entry in self.conversation_history:
-            for word in entry['user'].split() + entry['ai'].split():
-                if len(word) > 4:  # Only consider meaningful words
-                    word_freq[word] = word_freq.get(word, 0) + 1
-        
-        # Save top 20 words to config
-        top_words = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:20]
-        self.config['common_words'] = [word for word, freq in top_words]
-        self.save_config()
-
-    def update_language_models(self):
-        """Improve language understanding based on interactions"""
-        # This would integrate with actual ML models in a real implementation
-        print("Updating language models based on recent interactions")
 
     def speak_amharic(self, text):
         """Specialized Amharic speech with cultural context"""
@@ -482,46 +586,8 @@ class RakiAI:
         return {}
 
     def listen(self):
-        """Capture voice input with language support"""
-        with sr.Microphone() as source:
-            print("Listening...")
-            self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio = self.recognizer.listen(source, timeout=5)
-            
-            try:
-                if self.config['offline_mode']:
-                    # Offline recognition would go here (using Vosk or similar)
-                    command = "Offline mode not fully implemented"
-                else:
-                    # Use Google's speech recognition with dynamic language
-                    command = self.recognizer.recognize_google(
-                        audio, 
-                        language=self.get_google_lang_code()
-                    )
-                
-                print(f"You said: {command}")
-                return command.lower()
-            except sr.UnknownValueError:
-                self.speak("Sorry, I didn't quite catch that.")
-            except sr.RequestError:
-                self.speak("Network error. Switching to offline mode.")
-                self.config['offline_mode'] = True
-            except Exception as e:
-                print(f"Recognition error: {str(e)}")
-                
-        return ""
-
-    def get_google_lang_code(self):
-        """Map our language codes to Google's format"""
-        lang_map = {
-            'en': 'en-US',
-            'am': 'am-ET',
-            'om': 'om-ET',
-            'ti': 'ti-ET',
-            'fr': 'fr-FR',
-            'zh': 'zh-CN'
-        }
-        return lang_map.get(self.current_language, 'en-US')
+        """Capture voice input using selected engine"""
+        return self.voice.listen()
 
     def run_terminal_command(self, command):
         """Execute terminal commands with safety checks"""
