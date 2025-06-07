@@ -71,7 +71,17 @@ Raki AI is a cross-platform, voice-activated personal assistant built in Python.
 ## 🔧 Requirements
 
 ```bash
-pip install pyttsx3 speechrecognition pyaudio psutil
+# Core dependencies
+sudo apt install python3-pyaudio festival festvox-kallpc16k
+
+# Python packages
+pip install speechrecognition pyttsx3 requests beautifulsoup4 geocoder python-nmap pillow cryptography langdetect
+
+# For Google TTS
+pip install gtts playsound
+
+# For Vosk STT
+pip install vosk
 ```
 
 ## 👨‍💻 Author
