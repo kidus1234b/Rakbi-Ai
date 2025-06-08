@@ -24,6 +24,7 @@ import geocoder
 from email.message import EmailMessage
 from cryptography.fernet import Fernet
 from langdetect import detect, LangDetectException
+import logging
 
 # Configuration
 CONFIG_FILE = "raki_config.json"
@@ -31,47 +32,229 @@ REMINDERS_FILE = "encrypted_reminders.rak"
 KEY_FILE = "secret.key"
 HISTORY_FILE = "conversation_history.json"
 VOSK_MODEL_DIR = "vosk_models"
+MARYTTS_DIR = "marytts"
+MARYTTS_SERVER = "http://localhost:59125"
 
-class VoiceEngine:
+# Setup logging
+logging.basicConfig(filename='raki_ai.log', level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('RakiAI')
+
+class HumanizedTTS:
     def __init__(self, config):
         self.config = config
-        self.tts_engine = self.init_tts()
-        self.stt_engine = self.init_stt()
-        self.speech_patterns = {
-            'question': {'rate': -20, 'pitch': 1.2},
-            'statement': {'rate': 0, 'pitch': 1.0},
-            'exclamation': {'rate': 10, 'pitch': 1.3},
-            'command': {'rate': 5, 'pitch': 0.95},
-            'joke': {'rate': -10, 'pitch': 1.1},
-            'amharic': {'rate': 0, 'pitch': 1.0}
-        }
-        self.current_voice_profile = 'statement'
+        self.engine = self.init_engine()
+        self.speech_profiles = self.create_speech_profiles()
+        self.current_profile = 'neutral'
+        self.conversation_context = {}
         
-    def init_tts(self):
-        """Initialize text-to-speech engine based on config"""
+    def init_engine(self):
+        """Initialize the appropriate TTS engine"""
         if self.config['tts_provider'] == 'google':
             return GoogleTTS()
         elif self.config['tts_provider'] == 'festival':
             return FestivalTTS()
+        elif self.config['tts_provider'] == 'marytts':
+            return MaryTTS(self.config)
         else:  # Default to pyttsx3
             return Pyttsx3TTS()
     
-    def init_stt(self):
-        """Initialize speech-to-text engine based on config"""
-        if self.config['stt_provider'] == 'google':
-            return GoogleSTT()
-        elif self.config['stt_provider'] == 'vosk':
-            return VoskSTT(self.config['stt_model'])
-        else:  # Default to pyttsx3
-            return GoogleSTT()
+    def create_speech_profiles(self):
+        """Define natural speech characteristics for different contexts"""
+        return {
+            'neutral': {'rate': 1.0, 'pitch': 1.0, 'volume': 1.0, 'pauses': 0.3},
+            'question': {'rate': 0.9, 'pitch': 1.2, 'volume': 1.0, 'pauses': 0.4},
+            'excited': {'rate': 1.2, 'pitch': 1.3, 'volume': 1.1, 'pauses': 0.2},
+            'serious': {'rate': 0.8, 'pitch': 0.9, 'volume': 1.0, 'pauses': 0.5},
+            'amharic': {'rate': 1.0, 'pitch': 1.1, 'volume': 1.0, 'pauses': 0.35},
+            'joking': {'rate': 1.1, 'pitch': 1.4, 'volume': 1.0, 'pauses': 0.25}
+        }
     
-    def speak(self, text, lang='en'):
-        """Convert text to speech using selected engine"""
-        return self.tts_engine.speak(text, lang)
+    def apply_speech_profile(self, profile_name):
+        """Apply speech characteristics for a specific context"""
+        if profile_name in self.speech_profiles:
+            self.current_profile = profile_name
+            profile = self.speech_profiles[profile_name]
+            self.engine.set_rate(profile['rate'])
+            self.engine.set_pitch(profile['pitch'])
+            self.engine.set_volume(profile['volume'])
+            return profile['pauses']
+        return 0.3  # Default pause
     
-    def listen(self):
-        """Capture voice input using selected engine"""
-        return self.stt_engine.listen()
+    def detect_speech_context(self, text, lang):
+        """Determine appropriate speech profile based on content"""
+        if lang == 'am':
+            return 'amharic'
+        
+        text_lower = text.lower()
+        
+        # Question detection
+        if any(text.endswith(punct) for punct in ['?', '؟', '？']) or \
+           any(word in text_lower for word in ['who', 'what', 'when', 'where', 'why', 'how']):
+            return 'question'
+        
+        # Emotional context
+        if any(word in text_lower for word in ['great', 'wonderful', 'excellent', 'happy']):
+            return 'excited'
+        
+        if any(word in text_lower for word in ['problem', 'error', 'warning', 'critical', 'alert']):
+            return 'serious'
+        
+        if 'joke' in text_lower or 'laugh' in text_lower or 'funny' in text_lower:
+            return 'joking'
+        
+        return 'neutral'
+    
+    def add_prosody(self, text, lang):
+        """Add natural prosody to the text"""
+        # Add emphasis to important words
+        emphasis_words = ['important', 'critical', 'warning', 'alert', 'urgent',
+                          'አስፈላጊ', 'አደገኛ', 'ማስጠንቀቂያ', 'ችግር']
+        for word in emphasis_words:
+            if word in text:
+                text = text.replace(word, f"[EMPHASIZE]{word}[/EMPHASIZE]")
+        
+        # Add pauses after conjunctions
+        conjunctions = [' and ', ' but ', ' or ', ' so ', ' because ', ' however ',
+                        ' እና ', ' ግን ', ' ወይም ', ' ስለዚህ ']
+        for conj in conjunctions:
+            if conj in text:
+                text = text.replace(conj, f"{conj}[PAUSE]")
+        
+        return text
+    
+    def humanized_speak(self, text, lang='en'):
+        """Convert text to speech with human-like characteristics"""
+        if not text:
+            return
+            
+        # Determine speech context
+        context = self.detect_speech_context(text, lang)
+        pause_duration = self.apply_speech_profile(context)
+        
+        # Add natural prosody
+        processed_text = self.add_prosody(text, lang)
+        
+        logger.info(f"Raki AI: {text}")
+        print(f"Raki AI: {text}")
+        
+        # Split into sentences for natural pausing
+        sentences = re.split(r'(?<=[.!?]) +', processed_text)
+        
+        # Speak with appropriate pausing
+        for i, sentence in enumerate(sentences):
+            self.engine.speak(sentence, lang)
+            
+            # Add natural pause between sentences
+            if i < len(sentences) - 1:
+                actual_pause = pause_duration + random.uniform(-0.1, 0.1)
+                time.sleep(actual_pause)
+        
+        # Reset to neutral profile
+        self.apply_speech_profile('neutral')
+        
+        # Update conversation context
+        self.conversation_context = {
+            'last_spoken': text,
+            'time': time.time(),
+            'lang': lang
+        }
+
+class MaryTTS:
+    def __init__(self, config):
+        self.config = config
+        self.server_url = config.get('marytts_url', MARYTTS_SERVER)
+        self.voices = self.get_available_voices()
+        self.default_voice = self.select_default_voice()
+        
+    def get_available_voices(self):
+        """Get available voices from MaryTTS server"""
+        try:
+            response = requests.get(f"{self.server_url}/voices")
+            if response.status_code == 200:
+                return response.json()
+        except Exception as e:
+            logger.error(f"MaryTTS connection error: {str(e)}")
+        return []
+    
+    def select_default_voice(self):
+        """Select the best voice for the default language"""
+        default_lang = self.config.get('default_language', 'en')
+        
+        # Try to find a voice for the current language
+        lang_voices = [v for v in self.voices if v['locale'].startswith(default_lang)]
+        if lang_voices:
+            return lang_voices[0]['name']
+        
+        # Fallback to any available voice
+        if self.voices:
+            return self.voices[0]['name']
+        
+        return 'cmu-slt-hsmm'  # Default voice if none found
+    
+    def set_rate(self, rate):
+        """Set speech rate (relative speed)"""
+        # MaryTTS rate: 0.5 = half speed, 2.0 = double speed
+        self.rate = rate
+    
+    def set_pitch(self, pitch):
+        """Set speech pitch (relative frequency)"""
+        # MaryTTS pitch: 0.5 = half pitch, 2.0 = double pitch
+        self.pitch = pitch
+    
+    def set_volume(self, volume):
+        """Set speech volume (0.0 to 1.0)"""
+        self.volume = volume
+    
+    def speak(self, text, lang):
+        """Convert text to speech using MaryTTS"""
+        if not text:
+            return
+            
+        # Clean text for MaryTTS
+        clean_text = text.replace('[PAUSE]', ', ').replace('[EMPHASIZE]', '').replace('[/EMPHASIZE]', '')
+        
+        # Select appropriate voice based on language
+        voice = self.default_voice
+        if lang == 'am':
+            # Prefer Amharic voice if available
+            am_voices = [v['name'] for v in self.voices if v['locale'].startswith('am')]
+            if am_voices:
+                voice = am_voices[0]
+        
+        params = {
+            'INPUT_TEXT': clean_text,
+            'INPUT_TYPE': 'TEXT',
+            'OUTPUT_TYPE': 'AUDIO',
+            'AUDIO': 'WAVE',
+            'LOCALE': 'am_ET' if lang == 'am' else 'en_US',
+            'VOICE': voice,
+            'EFFECT_RATE': str(self.rate),
+            'EFFECT_PITCH': str(self.pitch),
+            'EFFECT_VOLUME': str(self.volume)
+        }
+        
+        try:
+            response = requests.get(f"{self.server_url}/process", params=params)
+            if response.status_code == 200:
+                # Play audio directly
+                with open("response.wav", "wb") as f:
+                    f.write(response.content)
+                
+                # Play audio using platform-specific player
+                if platform.system() == 'Darwin':  # macOS
+                    os.system('afplay response.wav')
+                elif platform.system() == 'Linux':  # Linux
+                    os.system('aplay response.wav')
+                elif platform.system() == 'Windows':  # Windows
+                    import winsound
+                    winsound.PlaySound("response.wav", winsound.SND_FILENAME)
+                
+                os.remove("response.wav")
+            else:
+                logger.error(f"MaryTTS error: {response.status_code} - {response.text}")
+        except Exception as e:
+            logger.error(f"MaryTTS playback error: {str(e)}")
 
 class Pyttsx3TTS:
     def __init__(self):
@@ -79,7 +262,7 @@ class Pyttsx3TTS:
         self.configure_voice()
         
     def configure_voice(self):
-        """Configure the most human-like voice available"""
+        """Configure the most natural voice available"""
         voices = self.engine.getProperty('voices')
         
         # Prefer Ethiopian-accented voices
@@ -88,14 +271,11 @@ class Pyttsx3TTS:
             self.engine.setProperty('voice', ethiopian_voices[0].id)
             return
             
-        # Prefer MBROLA voices
-        mbrola_voices = [v for v in voices if 'mbrola' in v.id.lower()]
-        if mbrola_voices:
-            self.engine.setProperty('voice', mbrola_voices[0].id)
-            return
-            
-        # Fallback to high-quality voices
-        preferred_voices = ['Microsoft Zira', 'Microsoft David', 'Karen', 'Daniel']
+        # Prefer high-quality voices
+        preferred_voices = [
+            'Microsoft Zira', 'Microsoft David', 
+            'Karen', 'Daniel', 'Samantha'
+        ]
         for pv in preferred_voices:
             for voice in voices:
                 if pv.lower() in voice.name.lower():
@@ -103,23 +283,34 @@ class Pyttsx3TTS:
                     return
         
         # Final fallback
-        print("Using default system voice")
+        logger.warning("Using default system voice for pyttsx3")
     
-    def speak(self, text, lang='en'):
+    def set_rate(self, rate):
+        """Set speech rate"""
+        # Convert relative rate to absolute value (pyttsx3 uses words per minute)
+        base_rate = self.engine.getProperty('rate')
+        self.engine.setProperty('rate', base_rate * rate)
+    
+    def set_pitch(self, pitch):
+        """Set speech pitch"""
+        if platform.system() == 'Darwin':  # macOS
+            # Pitch adjustment not well supported on macOS
+            return
+        self.engine.setProperty('pitch', pitch)
+    
+    def set_volume(self, volume):
+        """Set speech volume"""
+        self.engine.setProperty('volume', volume)
+    
+    def speak(self, text, lang):
         """Convert text to speech"""
         if not text:
             return
             
-        # Set language-specific properties
-        if lang == 'am':
-            self.engine.setProperty('rate', 150)
-            self.engine.setProperty('pitch', 1.1)
-        else:
-            self.engine.setProperty('rate', 160)
-            self.engine.setProperty('pitch', 1.0)
-            
-        print(f"Raki AI: {text}")
-        self.engine.say(text)
+        # Clean text for pyttsx3
+        clean_text = text.replace('[PAUSE]', ' ').replace('[EMPHASIZE]', '').replace('[/EMPHASIZE]', '')
+        
+        self.engine.say(clean_text)
         self.engine.runAndWait()
 
 class GoogleTTS:
@@ -130,17 +321,38 @@ class GoogleTTS:
             self.gTTS = gTTS
             self.playsound = playsound
         except ImportError:
-            print("Google TTS requires gtts and playsound packages")
+            logger.error("Google TTS requires gtts and playsound packages")
             raise
-        
-    def speak(self, text, lang='en'):
+    
+    def set_rate(self, rate):
+        """Set speech rate (Google TTS doesn't support dynamic rate)"""
+        pass
+    
+    def set_pitch(self, pitch):
+        """Set speech pitch (Google TTS doesn't support dynamic pitch)"""
+        pass
+    
+    def set_volume(self, volume):
+        """Set speech volume (Google TTS doesn't support dynamic volume)"""
+        pass
+    
+    def speak(self, text, lang):
         """Convert text to speech using Google's TTS"""
         if not text:
             return
             
-        print(f"Raki AI: {text}")
-        lang_map = {'en': 'en', 'am': 'am', 'om': 'om', 'ti': 'ti', 'fr': 'fr', 'zh': 'zh-CN'}
-        tts = self.gTTS(text=text, lang=lang_map.get(lang, 'en'), slow=False)
+        # Clean text
+        clean_text = text.replace('[PAUSE]', ', ').replace('[EMPHASIZE]', '').replace('[/EMPHASIZE]', '')
+        
+        lang_map = {
+            'en': 'en', 'am': 'am', 'om': 'om', 
+            'ti': 'ti', 'fr': 'fr', 'zh': 'zh-CN'
+        }
+        tts = self.gTTS(
+            text=clean_text, 
+            lang=lang_map.get(lang, 'en'), 
+            slow=False
+        )
         tts.save("response.mp3")
         self.playsound("response.mp3")
         os.remove("response.mp3")
@@ -151,28 +363,49 @@ class FestivalTTS:
         if not shutil.which('festival'):
             raise EnvironmentError("Festival not installed. Please install with: sudo apt install festival")
         
-    def speak(self, text, lang='en'):
+    def set_rate(self, rate):
+        """Set speech rate (Festival uses a different scale)"""
+        # Festival rate: 1.0 = normal, 2.0 = fast, 0.5 = slow
+        self.rate_factor = rate
+        
+    def set_pitch(self, pitch):
+        """Set speech pitch"""
+        # Festival pitch: 1.0 = normal, 1.5 = high, 0.5 = low
+        self.pitch = pitch
+    
+    def set_volume(self, volume):
+        """Set speech volume (Festival doesn't support dynamic volume)"""
+        pass
+    
+    def speak(self, text, lang):
         """Convert text to speech using Festival"""
         if not text:
             return
             
-        print(f"Raki AI: {text}")
+        # Clean and format text for Festival
+        clean_text = text.replace('[PAUSE]', '. ')
         
         # Map languages to Festival voices
         voice_map = {
-            'en': 'voice_kal_diphone',
-            'am': 'voice_JuntaDeAndalucia_spanish_am_hts',  # Ethiopian Amharic approximation
-            'fr': 'voice_fr_paulelaine',
-            'zh': 'voice_cmu_us_slt_arctic_hts'
+            'en': 'kal_diphone',
+            'am': 'cmu_us_slt_arctic_hts',  # Best approximation for Amharic
+            'fr': 'fr_paulelaine',
+            'zh': 'cmu_us_slt_arctic_hts'
         }
-        voice = voice_map.get(lang, 'voice_kal_diphone')
+        voice = voice_map.get(lang, 'kal_diphone')
         
-        # Use temporary file for better reliability
-        with open("tts.txt", "w") as f:
-            f.write(text)
+        # Add SSML-like markup for emphasis
+        ssml_text = f'(voice_{voice}) (Parameter.set \'Audio_Command "aplay -q -c 1 -t raw -f s16 -r $SR $FILE") '
+        ssml_text += f'(set! duffint_params \'((start {self.pitch}) (end {self.pitch}))) '
+        ssml_text += f'(Parameter.set \'Duration_Stretch {self.rate_factor}) '
+        ssml_text += f'(SayText "{clean_text}")'
+        
+        # Use temporary script file
+        with open("festival_script.scm", "w") as f:
+            f.write(ssml_text)
             
-        os.system(f'festival -b "(voice_{voice}) (tts \"tts.txt\" nil)"')
-        os.remove("tts.txt")
+        os.system('festival -b festival_script.scm')
+        os.remove("festival_script.scm")
 
 class GoogleSTT:
     def __init__(self):
@@ -181,17 +414,20 @@ class GoogleSTT:
     def listen(self):
         """Capture voice input using Google's speech recognition"""
         with sr.Microphone() as source:
+            logger.info("Listening...")
             print("Listening...")
             self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
             audio = self.recognizer.listen(source, timeout=5)
             
             try:
                 command = self.recognizer.recognize_google(audio)
+                logger.info(f"You said: {command}")
                 print(f"You said: {command}")
                 return command.lower()
             except sr.UnknownValueError:
                 return ""
             except sr.RequestError:
+                logger.warning("Network error. Switching to offline mode.")
                 print("Network error. Switching to offline mode.")
                 return ""
 
@@ -212,7 +448,7 @@ class VoskSTT:
             self.model = Model(self.model_path)
             self.audio = pyaudio.PyAudio()
         except ImportError:
-            print("Vosk requires vosk and pyaudio packages")
+            logger.error("Vosk requires vosk and pyaudio packages")
             raise
         
     def download_model(self, model_name):
@@ -230,6 +466,7 @@ class VoskSTT:
         os.makedirs(VOSK_MODEL_DIR, exist_ok=True)
         zip_path = os.path.join(VOSK_MODEL_DIR, f"{model_name}.zip")
         
+        logger.info(f"Downloading {model_name} model...")
         print(f"Downloading {model_name} model...")
         with requests.get(model_urls[model_name], stream=True) as r:
             r.raise_for_status()
@@ -249,6 +486,7 @@ class VoskSTT:
                      os.path.join(VOSK_MODEL_DIR, model_name))
         
         os.remove(zip_path)
+        logger.info(f"Model {model_name} downloaded and installed")
         print(f"Model {model_name} downloaded and installed")
         
     def listen(self):
@@ -258,6 +496,7 @@ class VoskSTT:
         stream.start_stream()
         
         recognizer = self.KaldiRecognizer(self.model, 16000)
+        logger.info("Listening (offline)...")
         print("Listening (offline)...")
         
         start_time = time.time()
@@ -266,6 +505,7 @@ class VoskSTT:
             if recognizer.AcceptWaveform(data):
                 result = json.loads(recognizer.Result())
                 command = result.get('text', '').lower()
+                logger.info(f"You said: {command}")
                 print(f"You said: {command}")
                 return command
                 
@@ -274,13 +514,16 @@ class VoskSTT:
 class RakiAI:
     def __init__(self):
         self.config = self.load_config()
-        self.voice = VoiceEngine(self.config)
         self.cipher = self.init_encryption()
         self.reminders = self.load_reminders()
         self.conversation_history = self.load_conversation_history()
         self.incognito_mode = False
         self.current_language = self.config['default_language']
         self.shutdown_flag = False
+        
+        # Initialize voice system
+        self.tts = HumanizedTTS(self.config)
+        self.stt = self.init_stt()
         
         # Ethiopian cultural context
         self.ethiopian_jokes = [
@@ -300,6 +543,15 @@ class RakiAI:
         threading.Thread(target=self.monitor_system, daemon=True).start()
         threading.Thread(target=self.deep_background_scan, daemon=True).start()
 
+    def init_stt(self):
+        """Initialize speech-to-text engine"""
+        if self.config['stt_provider'] == 'google':
+            return GoogleSTT()
+        elif self.config['stt_provider'] == 'vosk':
+            return VoskSTT(self.config['stt_model'])
+        else:  # Default to Google
+            return GoogleSTT()
+
     def load_config(self):
         """Load or create configuration"""
         default_config = {
@@ -312,17 +564,19 @@ class RakiAI:
             'temperature_unit': 'celsius',
             'google_api_key': '',
             'google_cse_id': '',
-            'tts_provider': 'pyttsx3',  # Options: pyttsx3, google, festival
+            'tts_provider': 'pyttsx3',  # Options: pyttsx3, google, festival, marytts
             'stt_provider': 'google',    # Options: google, vosk
-            'stt_model': 'en'            # Model for Vosk
+            'stt_model': 'en',           # Model for Vosk
+            'marytts_url': MARYTTS_SERVER,
+            'marytts_voice': ''
         }
         
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
                     return {**default_config, **json.load(f)}
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Error loading config: {str(e)}")
         return default_config
 
     def save_config(self):
@@ -360,7 +614,8 @@ class RakiAI:
                 encrypted = f.read()
                 decrypted = self.decrypt_data(encrypted)
                 return json.loads(decrypted)
-        except:
+        except Exception as e:
+            logger.error(f"Error loading reminders: {str(e)}")
             return []
 
     def save_reminders(self):
@@ -382,7 +637,8 @@ class RakiAI:
                 encrypted = f.read()
                 decrypted = self.decrypt_data(encrypted)
                 return json.loads(decrypted)
-        except:
+        except Exception as e:
+            logger.error(f"Error loading history: {str(e)}")
             return []
 
     def save_conversation_history(self):
@@ -410,7 +666,7 @@ class RakiAI:
     def speak(self, text, lang=None):
         """Speak text with human-like characteristics"""
         lang = lang or self.current_language
-        self.voice.speak(text, lang)
+        self.tts.humanized_speak(text, lang)
 
     def web_research(self, query, num_results=3):
         """Perform deep web research on a topic"""
@@ -491,6 +747,31 @@ class RakiAI:
                 time.sleep(1800)
             except:
                 time.sleep(300)
+
+    def start_marytts_server(self):
+        """Start MaryTTS server if not already running"""
+        # Check if server is already running
+        try:
+            response = requests.get(f"{self.config['marytts_url']}/voices", timeout=2)
+            if response.status_code == 200:
+                logger.info("MaryTTS server is already running")
+                return True
+        except:
+            pass
+        
+        # Try to start the server
+        marytts_jar = os.path.join(MARYTTS_DIR, "target", "marytts-5.2.1", "bin", "marytts-server")
+        if os.path.exists(marytts_jar):
+            logger.info("Starting MaryTTS server...")
+            threading.Thread(
+                target=lambda: subprocess.run([marytts_jar]),
+                daemon=True
+            ).start()
+            time.sleep(10)  # Wait for server to start
+            return True
+        
+        logger.warning("MaryTTS server not found. Please install MaryTTS.")
+        return False
 
     def speak_amharic(self, text):
         """Specialized Amharic speech with cultural context"""
@@ -587,7 +868,7 @@ class RakiAI:
 
     def listen(self):
         """Capture voice input using selected engine"""
-        return self.voice.listen()
+        return self.stt.listen()
 
     def run_terminal_command(self, command):
         """Execute terminal commands with safety checks"""
@@ -753,7 +1034,7 @@ class RakiAI:
             
             return True
         except Exception as e:
-            print(f"Email error: {str(e)}")
+            logger.error(f"Email error: {str(e)}")
             return False
 
     def system_info(self):
@@ -880,7 +1161,7 @@ class RakiAI:
                 match = re.search(r'email (.+?) (?:about )?(.+)', command)
                 if match:
                     recipient = match.group(1).strip()
-                    message = match.group(2).strip()
+                    message = match.group(2].strip()
                     if self.send_email(recipient, body=message):
                         response = f"Email sent to {recipient}."
             
@@ -995,4 +1276,9 @@ class RakiAI:
 
 if __name__ == "__main__":
     assistant = RakiAI()
+    
+    # Start MaryTTS server if selected
+    if assistant.config['tts_provider'] == 'marytts':
+        assistant.start_marytts_server()
+    
     assistant.main_loop()
